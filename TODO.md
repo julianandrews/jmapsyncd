@@ -17,7 +17,7 @@ Tasks 2, 3, and 4 are independent and can run in parallel after Task 1.
 
 ---
 
-- [ ] **Task 1 — Scaffold + Config + CLI + Logging**
+- [x] **Task 1 — Scaffold + Config + CLI + Logging**
   - Populate `Cargo.toml` with all dependencies
   - Create module stubs (`db`, `jmap`, `maildir`, `sync`)
   - Implement `config.rs`: all config structs, serde deserialization, path expansion, token resolution

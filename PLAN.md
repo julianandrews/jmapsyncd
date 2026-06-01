@@ -38,9 +38,10 @@ jmapsyncd/
 ├── Cargo.toml
 └── src/
     ├── lib.rs            # Re-exports public API
+    ├── args.rs           # CLI definition (clap derive)
     ├── bin/
     │   └── jmapsyncd.rs  # CLI entry point, daemon loop, top-level orchestration
-    ├── config.rs          # Config structs, deserialize, expand
+    ├── config.rs          # Config structs, deserialize, expand, resolved config
     ├── logging.rs         # env_logger init
     ├── db/
     │   ├── mod.rs         # Connection, migrations
@@ -107,98 +108,127 @@ local = "Sent"
 # Future: [accounts.calendars]
 ```
 
-### Config structs (Rust)
+### Config types (Rust)
+
+Two structs serve different roles:
+
+- **`ConfigFile`** (private) — maps directly to the TOML file; owns `Deserialize`.
+- **`Config`** (public) — the final merged config after precedence resolution
+  (CLI overrides → file → defaults). Returned by `Config::load()`.
 
 ```rust
+// --- Merged config used by the rest of the code ---
+
+#[derive(Debug)]
+pub struct Config {
+    pub db_dir: PathBuf,
+    pub accounts: Vec<Account>,
+}
+
+impl Config {
+    pub fn load(path: Option<&Path>, overrides: &Overrides) -> Result<Self> { ... }
+}
+
+#[derive(Debug, Default)]
+pub struct Overrides {
+    pub db_dir: Option<PathBuf>,
+}
+
+// --- TOML file deserialization (private) ---
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Config {
-    #[serde(default)]
-    db_dir: Option<PathBuf>,    // None = use dirs::data_dir()
-    #[serde(default = "default_log_level")]
-    log_level: String,
+struct ConfigFile {
+    #[serde(default, deserialize_with = "helpers::expand_opt_path")]
+    db_dir: Option<PathBuf>,
     #[serde(default)]
     accounts: Vec<Account>,
 }
+```
 
-fn default_log_level() -> String { "info".into() }
-
+Per-account:
+```rust
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Account {
-    name: String,
-    enabled: Option<bool>,          // None = true at usage site
-    jmap_host: String,
-    jmap_user: String,
-    jmap_token:      Option<String>,    // inline
-    jmap_token_file: Option<PathBuf>,   // file path
-    jmap_token_cmd:  Option<String>,    // subcommand
-    timeout_secs: Option<u64>,          // None = default at usage site
-    mail: Option<MailConfig>,
-    // contacts, calendars — future
+pub struct Account {
+    pub name: String,
+    #[serde(default = "helpers::default_true")]
+    pub enabled: bool,
+    pub jmap_host: String,
+    pub jmap_user: String,
+    #[serde(flatten)]
+    pub token: TokenSource,            // exactly one via untagged serde enum
+    #[serde(default = "helpers::default_timeout_secs")]
+    pub timeout_secs: u64,             // default 30
+    pub mail: Option<MailConfig>,
 }
 
+// Token is an untagged enum — serde tries variants in order
+// and picks the first that matches. "Exactly one" is enforced
+// by deserialization failure when no variant matches.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum TokenSource {
+    Inline { jmap_token: String },
+    File {
+        #[serde(deserialize_with = "helpers::expand_path")]
+        jmap_token_file: PathBuf,
+    },
+    Cmd { jmap_token_cmd: String },
+}
+```
+
+Mail settings:
+```rust
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MailConfig {
-    path: PathBuf,
+pub struct MailConfig {
+    #[serde(deserialize_with = "helpers::expand_path")]
+    pub path: PathBuf,
     #[serde(default)]
-    sync_mode: SyncMode,
-    subscribed_only: Option<bool>,
-    box_filter: Option<Vec<String>>,
-    tls: Option<TlsConfig>,
+    pub sync_mode: SyncMode,
+    #[serde(default = "helpers::default_true")]
+    pub subscribed_only: bool,
+    pub box_filter: Option<Vec<String>>,
+    pub tls: Option<TlsConfig>,
     #[serde(default)]
-    box_mapping: Vec<BoxMapping>,
+    pub box_mapping: Vec<BoxMapping>,
+}
+```
+
+Leaf types:
+```rust
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsConfig {
+    #[serde(default, deserialize_with = "helpers::expand_opt_path")]
+    pub ca_file: Option<PathBuf>,
+    #[serde(default, deserialize_with = "helpers::expand_opt_path")]
+    pub client_cert: Option<PathBuf>,
+    #[serde(default, deserialize_with = "helpers::expand_opt_path")]
+    pub client_key: Option<PathBuf>,
+    pub fingerprint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TlsConfig {
-    ca_file: Option<PathBuf>,
-    client_cert: Option<PathBuf>,
-    client_key: Option<PathBuf>,
-    fingerprint: Option<String>,    // "SHA256:..."
+pub struct BoxMapping {
+    pub remote: String,
+    pub local: String,
 }
 
-struct BoxMapping {
-    remote: String,
-    local: String,
-}
-
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-enum SyncMode {
+pub enum SyncMode {
     #[default]
     Mirror,
     TwoWay,
 }
-
-// --- Token resolution ---
-
-enum TokenSource {
-    Inline(String),
-    File(PathBuf),
-    Cmd(String),
-}
-
-impl Account {
-    fn resolve_token(&self) -> Result<TokenSource> {
-        match (&self.jmap_token, &self.jmap_token_file, &self.jmap_token_cmd) {
-            (Some(t), None, None) => Ok(TokenSource::Inline(t.clone())),
-            (None, Some(p), None) => Ok(TokenSource::File(p.clone())),
-            (None, None, Some(c)) => Ok(TokenSource::Cmd(c.clone())),
-            (None, None, None) => bail!("exactly one of jmap_token, jmap_token_file, \
-                                         jmap_token_cmd is required"),
-            _ => bail!("exactly one of jmap_token, jmap_token_file, \
-                        jmap_token_cmd must be set (got multiple)"),
-        }
-    }
-}
 ```
 
-`#[serde(deny_unknown_fields)]` on `Account`, `MailConfig`, and `TlsConfig`
-catches typos (e.g. `ca_fille` → "unknown field") at parse time.
-`resolve_token()` gives a clear error if zero or multiple token fields are set.
+`#[serde(deny_unknown_fields)]` is used on `ConfigFile`, `MailConfig`, and
+`TlsConfig` to catch typos at parse time. It is intentionally **not** on
+`Account` because `#[serde(flatten)]` + `#[serde(untagged)]` are incompatible
+with `deny_unknown_fields` (serde can't know upfront which fields the
+untagged variant will consume).
 
 ### Path expansion
 
@@ -209,13 +239,19 @@ All path fields (`db_dir`, `jmap_token_file`, `path`, `ca_file`, `client_cert`,
 - `$VAR` / `${VAR}` → expanded from environment variables
 - `${VAR:-default}` → fallback default if unset
 
-Expansion is applied eagerly when the config is loaded, before any path is
-used. The rest of the code always works with absolute, expanded paths.
+Expansion happens **at parse time** via per-field serde helpers
+(`helpers::expand_path` for required paths,
+`helpers::expand_opt_path` for optional paths). Every `PathBuf` field
+in the config structs is annotated with
+`#[serde(deserialize_with = "helpers::expand_path")]` or
+`#[serde(default, deserialize_with = "helpers::expand_opt_path")]`.
+The rest of the code always works with absolute, expanded paths and
+there is no post-deserialization `expand_paths` step to maintain.
 
 ### CLI flags
 
-Built with `clap` derive. All account-level config belongs in `config.toml` —
-the CLI only controls runtime behavior and basic overrides.
+Built with `clap` derive in `src/args.rs`. All account-level config belongs in
+`config.toml` — the CLI only controls runtime behavior and basic overrides.
 
 ```
 jmapsyncd [OPTIONS] [COMMAND]
@@ -244,16 +280,24 @@ for initial setup, scripting, or `--dry-run` testing.
 | `JMAPSYNCD_LOG_LEVEL` | `log_level` | Log level (trace/debug/info/warn/error) |
 | `RUST_LOG` | — | Standard log env var; alternative to `JMAPSYNCD_LOG_LEVEL` |
 
-Precedence:
+Precedence for all config-overridable values (`--db-dir`, etc.):
 1. CLI flag wins over everything
-2. Dedicated env var (`JMAPSYNCD_*`) wins over config file value
-3. Config file value wins over `RUST_LOG` (fallback)
-4. Hardcoded default wins if nothing is set
+2. Dedicated env var (`JMAPSYNCD_DB_DIR`) wins over config file value
+3. Config file value wins over hardcoded default
+
+`log_level` is **not** in the config file — it is CLI/env only, with
+`RUST_LOG` as a fallback. See [Logging](#logging).
 
 ## Logging
 
-Initialized on startup via `env_logger`. Effective level follows the standard
-precedence (CLI > `JMAPSYNCD_LOG_LEVEL` > config > `RUST_LOG`).
+Initialized on startup via `env_logger`. Effective level:
+1. `--log-level` CLI flag
+2. `JMAPSYNCD_LOG_LEVEL` env var (handled by clap)
+3. `RUST_LOG` env var (handled by `env_logger::Builder::from_default_env()`)
+4. Hardcoded `info` default
+
+There is no `log_level` in the config file — it is purely a runtime/debugging
+concern, not a sync configuration concern.
 
 | Level | What goes there |
 |---|---|
@@ -502,12 +546,13 @@ the code they test. Every module with non-trivial logic should have them.
 Examples:
 
 - Config deserialization edge cases (missing fields, unknown fields, expansion)
+- Config merge/precedence (CLI override > file > default)
 - DB query correctness (CRUD round-trips via in-memory SQLite)
 - Flag parsing and filename generation round-trips
 - `notify` event detection (create/modify/delete in a temp dir)
 - Three-way diff logic
 - Primary mailbox selection rules
-- Token resolution (exactly-one validation)
+- Token deserialization (exactly-one enforced by serde)
 
 The pattern:
 
