@@ -12,6 +12,7 @@ Bidirectional JMAP ↔ Maildir sync daemon.
 - `anyhow` for error handling
 - `dirs` for config/data paths
 - `rusqlite` (with `features = ["bundled"]`)
+- `serde_rusqlite` — deserialize rusqlite rows into structs via `#[derive(Deserialize)]`
 - `jmap-client` for JMAP connection
 - `notify` for watching for maildir changes
 - `maildir` - for maildir operations
@@ -44,8 +45,8 @@ jmapsyncd/
     ├── config.rs          # Config structs, deserialize, expand, resolved config
     ├── logging.rs         # env_logger init
     ├── db/
-    │   ├── mod.rs         # Connection, migrations
-    │   └── models.rs      # Row types, CRUD queries
+    │   ├── mod.rs         # Database struct (open, WAL, integrity, migrate) + CRUD methods
+    │   └── models.rs      # Row types (pure data structs with #[derive(Deserialize)])
     ├── jmap/
     │   └── mod.rs         # JMAP client wrapper (session, retry, trait)
     ├── maildir/
@@ -604,7 +605,7 @@ pub trait JmapClient: Send + Sync {
 | Component | Tool | Pattern |
 |---|---|---|
 | Temp directories | `tempfile::tempdir()` | Dropped on test exit, no cleanup needed |
-| SQLite database | `rusqlite::Connection::open_in_memory()` | Run migrations, test queries, drop |
+| SQLite database | `Database::open_in_memory()` | Run migrations, CRUD operations, drop |
 | JMAP mock | Custom `JmapClient` impl | Simple in-memory HashMap + channel |
 | HTTP mock (optional) | `wiremock` | Start `MockServer`, configure routes |
 | `notify` events | `tempfile` + real `notify::recommended_watcher()` | Create files in a temp dir, wait via `recv_timeout` |

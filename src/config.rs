@@ -248,11 +248,11 @@ sync_mode = "two_way"
 subscribed_only = false
 box_filter = ["INBOX", "Sent*"]
 
-  [accounts.mail.tls]
-  ca_file = "/etc/ssl/certs/ca-certificates.crt"
-  client_cert = "~/certs/client.pem"
-  client_key = "~/certs/client.key"
-  fingerprint = "SHA256:abc123"
+[accounts.mail.tls]
+ca_file = "/etc/ssl/certs/ca-certificates.crt"
+client_cert = "~/certs/client.pem"
+client_key = "~/certs/client.key"
+fingerprint = "SHA256:abc123"
 
 [[accounts.mail.box_mapping]]
 remote = "Sent Items"
@@ -307,7 +307,7 @@ unknown = true
     }
 
     #[test]
-    fn token_exactly_one_required() {
+    fn token_at_least_one_required() {
         // Zero tokens — fails deserialization
         let result: Result<ConfigFile, _> = toml::from_str(
             r#"
@@ -628,8 +628,10 @@ jmap_token = "t"
     #[test]
     fn load_with_missing_file_errors() {
         let overrides = Overrides { db_dir: None };
-        let result =
-            Config::load(Some(std::path::Path::new("/nonexistent/config.toml")), &overrides);
+        let result = Config::load(
+            Some(std::path::Path::new("/nonexistent/config.toml")),
+            &overrides,
+        );
         assert!(result.is_err());
     }
 

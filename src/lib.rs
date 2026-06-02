@@ -2,9 +2,7 @@ pub mod args;
 pub mod config;
 pub mod logging;
 
-pub mod db {
-    pub mod models;
-}
+pub mod db;
 
 pub mod jmap;
 

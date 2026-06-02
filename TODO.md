@@ -26,7 +26,7 @@ Tasks 2, 3, and 4 are independent and can run in parallel after Task 1.
   - Re-export public API from `lib.rs`
   - Tests: config edge cases, CLI parsing, token validation
 
-- [ ] **Task 2 — Database layer**
+- [x] **Task 2 — Database layer**
   - `db/mod.rs`: connection, WAL mode, integrity check, migrations
   - `db/models.rs`: row types + CRUD for `mailboxes`, `emails`, `email_mailboxes`
   - Tests: in-memory SQLite round-trips for all CRUD
