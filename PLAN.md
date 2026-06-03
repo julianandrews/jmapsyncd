@@ -48,10 +48,7 @@ jmapsyncd/
     │   ├── mod.rs         # Database struct (open, WAL, integrity, migrate) + CRUD methods
     │   └── models.rs      # Row types (pure data structs with #[derive(Deserialize)])
     ├── jmap/
-    │   └── mod.rs         # JMAP client wrapper (session, retry, trait)
-    ├── maildir/
-    │   ├── mod.rs
-    │   └── filename.rs    # File naming, :2, flag parsing
+    │   └── mod.rs         # JMAP connection helpers (build Client from account config)
     └── sync/
         ├── mod.rs         # Sync orchestration, three-way diff
         ├── mailbox.rs     # Mailbox list sync
@@ -59,8 +56,9 @@ jmapsyncd/
 ```
 
 Single crate with `lib.rs` keeps compilation fast and makes the library
-testable. Phase 2 modules (`sync/push.rs`, `maildir/watcher.rs`) are
-added later as new files.
+testable. Phase 2 modules (`sync/push.rs`) are
+added later as new files. The `maildir` crate is used directly
+for Maildir file operations.
 
 ## Configuration
 
@@ -549,10 +547,9 @@ Examples:
 - Config deserialization edge cases (missing fields, unknown fields, expansion)
 - Config merge/precedence (CLI override > file > default)
 - DB query correctness (CRUD round-trips via in-memory SQLite)
-- Flag parsing and filename generation round-trips
-- `notify` event detection (create/modify/delete in a temp dir)
 - Three-way diff logic
 - Primary mailbox selection rules
+- Keyword↔flag mapping (JMAP keywords to Maildir flags and back)
 - Token deserialization (exactly-one enforced by serde)
 
 The pattern:
@@ -578,36 +575,23 @@ Examples:
 - Config file loading and validation
 - Daemon startup and shutdown sequence
 
-### JMAP abstraction for testability
+### Testing JMAP interactions
 
-`jmap-client` does not support injecting a mock HTTP client. Every module
-that needs server communication receives a trait instead:
+`jmap-client` does not support injecting a mock HTTP client. Sync tests use
+`wiremock` to simulate the JMAP server at the HTTP level. A `wiremock::MockServer`
+is started in the test, and the real `jmap_client::Client` is pointed at it.
 
-```rust
-#[async_trait]
-pub trait JmapClient: Send + Sync {
-    async fn list_mailboxes(&self) -> Result<Vec<MailboxInfo>>;
-    async fn fetch_emails(&self, ids: &[String]) -> Result<Vec<EmailData>>;
-    async fn email_changes(&self, since_state: &str) -> Result<Changes>;
-    async fn download_blob(&self, id: &str) -> Result<Vec<u8>>;
-    // etc — one method per JMAP operation that sync/ needs
-}
-```
-
-- **Production impl** (`JmapLiveClient`): wraps `jmap_client::Client`.
-- **Test impl** (`JmapMockClient`): in-memory stub with configurable
-  responses. Sync tests create this directly, no HTTP involved.
-- **Wiremock-backed tests**: for HTTP-level testing, start a `wiremock` server
-  in the test and point a real `jmap_client::Client` at it.
+No trait or mock client is defined. The sync engine takes `&jmap_client::Client`
+directly. This keeps the abstraction layer thin and avoids maintaining a
+parallel test stub that can drift from the real HTTP behaviour.
 
 ### Per-test infrastructure
 
 | Component | Tool | Pattern |
-|---|---|---|
+|---|---|---|---|
 | Temp directories | `tempfile::tempdir()` | Dropped on test exit, no cleanup needed |
 | SQLite database | `Database::open_in_memory()` | Run migrations, CRUD operations, drop |
-| JMAP mock | Custom `JmapClient` impl | Simple in-memory HashMap + channel |
-| HTTP mock (optional) | `wiremock` | Start `MockServer`, configure routes |
+| JMAP mock | `wiremock` | Start `MockServer`, configure routes matching JMAP request structure, point real `jmap_client::Client` at the mock |
 | `notify` events | `tempfile` + real `notify::recommended_watcher()` | Create files in a temp dir, wait via `recv_timeout` |
 
 `notify` tests use real filesystem operations on `tempfile`-created directories.
