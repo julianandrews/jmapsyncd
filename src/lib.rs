@@ -6,9 +6,7 @@ pub mod db;
 
 pub mod jmap;
 
-pub mod maildir {
-    pub mod filename;
-}
+pub mod maildir;
 
 pub mod sync {
     pub mod mailbox;
