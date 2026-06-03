@@ -31,7 +31,7 @@ Tasks 2, 3, and 4 are independent and can run in parallel after Task 1.
   - `db/models.rs`: row types + CRUD for `mailboxes`, `emails`, `email_mailboxes`
   - Tests: in-memory SQLite round-trips for all CRUD
 
-- [x] **Task 3 — Maildir operations**
+- [ ] **Task 3 — Maildir operations**
   - `maildir/filename.rs`: flag parsing, filename generation round-trips
   - `maildir/mod.rs`: directory creation, file scanning
   - Tests: flag parsing, filename round-trips, directory ops via tempdir
